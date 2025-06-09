@@ -82,7 +82,6 @@ public class DozeSensors {
     private long mDebounceFrom;
     private boolean mSettingRegistered;
     private boolean mListening;
-    private boolean mListeningTouchScreenSensors;
 
     @VisibleForTesting
     public enum DozeSensorsUiEvent implements UiEventLogger.UiEventEnum {
@@ -227,25 +226,22 @@ public class DozeSensors {
     /**
      * If sensors should be registered and sending signals.
      */
-    public void setListening(boolean listen, boolean includeTouchScreenSensors) {
-        if (mListening == listen && mListeningTouchScreenSensors == includeTouchScreenSensors) {
+    public void setListening(boolean listen) {
+        if (mListening == listen) {
             return;
         }
         mListening = listen;
-        mListeningTouchScreenSensors = includeTouchScreenSensors;
         updateListening();
     }
 
     /**
      * Registers/unregisters sensors based on internal state.
      */
-    private void updateListening() {
+    public void updateListening() {
         boolean anyListening = false;
         for (TriggerSensor s : mSensors) {
-            boolean listen = mListening
-                    && (!s.mRequiresTouchscreen || mListeningTouchScreenSensors);
-            s.setListening(listen);
-            if (listen) {
+            s.setListening(mListening);
+            if (mListening) {
                 anyListening = true;
             }
         }
@@ -317,14 +313,10 @@ public class DozeSensors {
 
     /** Dump current state */
     public void dump(PrintWriter pw) {
-        pw.println("mListening=" + mListening);
-        pw.println("mListeningTouchScreenSensors=" + mListeningTouchScreenSensors);
-        IndentingPrintWriter idpw = new IndentingPrintWriter(pw, "  ");
-        idpw.increaseIndent();
         for (TriggerSensor s : mSensors) {
-            idpw.println("Sensor: " + s.toString());
+            pw.println("  Sensor: " + s.toString());
         }
-        idpw.println("ProxSensor: " + mProximitySensor.toString());
+        pw.println("  ProxSensor: " + mProximitySensor.toString());
     }
 
     /**

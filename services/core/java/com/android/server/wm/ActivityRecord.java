@@ -265,6 +265,7 @@ import android.os.PersistableBundle;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
+import android.os.SystemProperties;
 import android.os.Trace;
 import android.os.UserHandle;
 import android.os.storage.StorageManager;
@@ -561,6 +562,9 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
     public BoostFramework mPerf = null;
     public BoostFramework mPerf_iop = null;
 
+    private final boolean isLowRamDevice =
+             SystemProperties.getBoolean("ro.config.low_ram", false);
+
     boolean mVoiceInteraction;
 
     private int mPendingRelaunchCount;
@@ -688,6 +692,13 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
     ArrayDeque<Configuration> mFrozenMergedConfig = new ArrayDeque<>();
 
     private AppSaturationInfo mLastAppSaturationInfo;
+
+    private final ActivityRecordInputSink mActivityRecordInputSink;
+
+    // Activities with this uid are allowed to not create an input sink while being in the same
+    // task and directly above this ActivityRecord. This field is updated whenever a new activity
+    // is launched from this ActivityRecord. Touches are always allowed within the same uid.
+    int mAllowedTouchUid;
 
     private final ColorDisplayService.ColorTransformController mColorTransformController =
             (matrix, translation) -> mWmService.mH.post(() -> {
@@ -1209,6 +1220,12 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
             }
             ensureActivityConfiguration(0 /* globalChanges */, PRESERVE_WINDOWS,
                     true /* ignoreVisibility */);
+            if (inPictureInPictureMode && findMainWindow() == null) {
+                // Prevent malicious app entering PiP without valid WindowState, which can in turn
+                // result a non-touchable PiP window since the InputConsumer for PiP requires it.
+                EventLog.writeEvent(0x534e4554, "265293293", -1, "");
+                removeImmediately();
+            }
         }
     }
 
@@ -1673,6 +1690,8 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
 
         if (mPerf == null)
             mPerf = new BoostFramework();
+
+        mActivityRecordInputSink = new ActivityRecordInputSink(this, sourceRecord);
     }
 
     /**
@@ -3213,6 +3232,7 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
     @Override
     void removeImmediately() {
         onRemovedFromDisplay();
+        mActivityRecordInputSink.releaseSurfaceControl();
         super.removeImmediately();
     }
 
@@ -4542,20 +4562,24 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
                 aState = ActivityStates.RESTARTING_PROCESS;
                 break;
         }
-        if(DEBUG_SERVICETRACKER) {
-            Slog.v(TAG, "Calling mServicetracker.OnActivityStateChange with flag " + early_notify + " state " + state);
-        }
-        try {
-            mServicetracker = mAtmService.mStackSupervisor.getServicetrackerInstance();
-            if (mServicetracker != null)
-                mServicetracker.OnActivityStateChange(aState, aDetails, aStats, early_notify);
-            else
-                Slog.e(TAG, "Unable to get servicetracker HAL instance");
-        } catch (RemoteException e) {
-                Slog.e(TAG, "Failed to send activity state change details to servicetracker HAL", e);
-                mAtmService.mStackSupervisor.destroyServicetrackerInstance();
-        }
 
+        if (!isLowRamDevice) {
+            if(DEBUG_SERVICETRACKER) {
+                Slog.v(TAG, "Calling mServicetracker.OnActivityStateChange with flag "
+                           + early_notify + " state " + state);
+            }
+            try {
+                mServicetracker = mAtmService.mStackSupervisor.getServicetrackerInstance();
+                if (mServicetracker != null)
+                    mServicetracker.OnActivityStateChange(aState, aDetails, aStats, early_notify);
+                else
+                    Slog.e(TAG, "Unable to get servicetracker HAL instance");
+            } catch (RemoteException e) {
+                    Slog.e(TAG,
+                         "Failed to send activity state change details to servicetracker HAL", e);
+                    mAtmService.mStackSupervisor.destroyServicetrackerInstance();
+            }
+        }
     }
 
     ActivityState getState() {
@@ -6183,6 +6207,9 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
                 getSyncTransaction().show(mSurfaceControl);
             } else if (!show && mLastSurfaceShowing) {
                 getSyncTransaction().hide(mSurfaceControl);
+            }
+            if (show) {
+                mActivityRecordInputSink.applyChangesToSurfaceIfChanged(getSyncTransaction());
             }
         }
         if (mThumbnail != null) {
